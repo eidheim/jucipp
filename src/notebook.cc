@@ -10,6 +10,14 @@
 #include "source_language_protocol.h"
 #include "gtksourceview-3.0/gtksourceview/gtksourcemap.h"
 
+template <class firstIt, class secondIt>
+  auto mismatch(firstIt first1, firstIt last1, secondIt first2,secondIt last2){
+  while (first1 != last1 && first2 != last2 && *first1 == *first2) {
+      ++first1, ++first2;
+  }
+  return std::make_pair(*first1, *first2);
+};
+
 Notebook::TabLabel::TabLabel(const boost::filesystem::path &path, std::function<void()> on_close) {
   set_can_focus(false);
   set_tooltip_text(path.string());
@@ -195,20 +203,46 @@ void Notebook::open(const boost::filesystem::path &file_path_, size_t notebook_i
     }
   };
   source_views.back()->update_tab_label=[this](Source::View *view) {
-    std::string title=view->file_path.filename().string();
-    if(view->get_buffer()->get_modified())
-      title+='*';
-    else
-      title+=' ';
+    const auto update_label = [&](const boost::filesystem::path &path, size_t index){
+      const auto current_view = source_views[index];
+      std::string title = current_view->file_path.filename().string();
+      if(!path.empty())
+        title = path.string() + "/.../" + title;
+      if(view->get_buffer()->get_modified())
+        title+='*';
+      else
+        title+=' ';
+      auto &tab_label=tab_labels.at(index);
+      tab_label->label.set_text(title);
+      tab_label->set_tooltip_text(filesystem::get_short_path(current_view->file_path).string());
+    };
+    std::unordered_map<int, std::pair<boost::filesystem::path, boost::filesystem::path>> uncommon_paths;
+    const auto file_name=view->file_path.filename();
+    size_t current_view_index = 0;
     for(size_t c=0;c<size();++c) {
       if(source_views[c]==view) {
-        auto &tab_label=tab_labels.at(c);
-        tab_label->label.set_text(title);
-        tab_label->set_tooltip_text(filesystem::get_short_path(view->file_path).string());
-        update_status(view);
-        return;
+        current_view_index = c;
+        continue;
+      }
+      if (source_views[c]->file_path.filename() == file_name) {
+        auto const first_uncommon_path = mismatch(
+          view->file_path.parent_path().rbegin(),
+          view->file_path.parent_path().rend(),
+          source_views[c]->file_path.parent_path().rbegin(),
+          source_views[c]->file_path.parent_path().rend()
+        );
+        uncommon_paths.emplace(std::make_pair(c, first_uncommon_path));
       }
     }
+    for (const auto &uncommon_path : uncommon_paths) {
+      update_label(uncommon_path.second.second, uncommon_path.first);
+    }
+    if (uncommon_paths.empty()) {
+      update_label("", current_view_index);
+    } else {
+      update_label(uncommon_paths.begin()->second.first, current_view_index);
+    }
+    update_status(view);
   };
   source_views.back()->update_status_diagnostics=[this](Source::View* view) {
     if(get_current_view()==view) {
