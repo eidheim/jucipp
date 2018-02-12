@@ -10,14 +10,6 @@
 #include "source_language_protocol.h"
 #include "gtksourceview-3.0/gtksourceview/gtksourcemap.h"
 
-template <class firstIt, class secondIt>
-  auto mismatch(firstIt first1, firstIt last1, secondIt first2,secondIt last2){
-  while (first1 != last1 && first2 != last2 && *first1 == *first2) {
-      ++first1, ++first2;
-  }
-  return std::make_pair(*first1, *first2);
-};
-
 Notebook::TabLabel::TabLabel(const boost::filesystem::path &path, std::function<void()> on_close) {
   set_can_focus(false);
   set_tooltip_text(path.string());
@@ -26,7 +18,6 @@ Notebook::TabLabel::TabLabel(const boost::filesystem::path &path, std::function<
   auto hbox=Gtk::manage(new Gtk::Box());
   
   hbox->set_can_focus(false);
-  label.set_text(path.filename().string()+' ');
   label.set_can_focus(false);
   button->set_image_from_icon_name("window-close-symbolic", Gtk::ICON_SIZE_MENU);
   button->set_can_focus(false);
@@ -203,12 +194,10 @@ void Notebook::open(const boost::filesystem::path &file_path_, size_t notebook_i
     }
   };
   source_views.back()->update_tab_label=[this](Source::View *view) {
-    const auto update_label = [&](const boost::filesystem::path &path, size_t index){
+    const auto update_label = [this](size_t index, const std::string &prepend) {
       const auto current_view = source_views[index];
-      std::string title = current_view->file_path.filename().string();
-      if(!path.empty())
-        title = path.string() + "/.../" + title;
-      if(view->get_buffer()->get_modified())
+      auto title = prepend+current_view->file_path.filename().string();
+      if(current_view->get_buffer()->get_modified())
         title+='*';
       else
         title+=' ';
@@ -216,32 +205,32 @@ void Notebook::open(const boost::filesystem::path &file_path_, size_t notebook_i
       tab_label->label.set_text(title);
       tab_label->set_tooltip_text(filesystem::get_short_path(current_view->file_path).string());
     };
-    std::unordered_map<int, std::pair<boost::filesystem::path, boost::filesystem::path>> uncommon_paths;
     const auto file_name=view->file_path.filename();
     size_t current_view_index = 0;
+    std::string prepend_current_view;
     for(size_t c=0;c<size();++c) {
       if(source_views[c]==view) {
         current_view_index = c;
         continue;
       }
       if (source_views[c]->file_path.filename() == file_name) {
-        auto const first_uncommon_path = mismatch(
-          view->file_path.parent_path().rbegin(),
-          view->file_path.parent_path().rend(),
-          source_views[c]->file_path.parent_path().rbegin(),
-          source_views[c]->file_path.parent_path().rend()
-        );
-        uncommon_paths.emplace(std::make_pair(c, first_uncommon_path));
+        int diff=0;
+        auto parent_path1=view->file_path.parent_path();
+        auto parent_path2=source_views[c]->file_path.parent_path();
+        auto it1=parent_path1.rbegin();
+        auto it2=parent_path2.rbegin();
+        while (it1 != parent_path1.rend() &&
+               it2 != parent_path2.rend() && *it1 == *it2) {
+          ++it1;
+          ++it2;
+          ++diff;
+        }
+        if(prepend_current_view.empty())
+          prepend_current_view=it1->string()+(diff>0?"/.../":"/");
+        update_label(c, it2->string()+(diff>0?"/.../":"/"));
       }
     }
-    for (const auto &uncommon_path : uncommon_paths) {
-      update_label(uncommon_path.second.second, uncommon_path.first);
-    }
-    if (uncommon_paths.empty()) {
-      update_label("", current_view_index);
-    } else {
-      update_label(uncommon_paths.begin()->second.first, current_view_index);
-    }
+    update_label(current_view_index, prepend_current_view);
     update_status(view);
   };
   source_views.back()->update_status_diagnostics=[this](Source::View* view) {
@@ -327,6 +316,8 @@ void Notebook::open(const boost::filesystem::path &file_path_, size_t notebook_i
     if(index!=static_cast<size_t>(-1))
       close(index);
   }));
+  if(source_views.back()->update_tab_label)
+    source_views.back()->update_tab_label(source_views.back());
   
   //Add star on tab label when the page is not saved:
   source_view->get_buffer()->signal_modified_changed().connect([this, source_view]() {
@@ -539,6 +530,11 @@ bool Notebook::close(size_t index) {
     scrolled_windows.erase(scrolled_windows.begin()+index);
     hboxes.erase(hboxes.begin()+index);
     tab_labels.erase(tab_labels.begin()+index);
+  }
+  
+  for(auto view: get_views()) { // Update all view tabs in case one clicks cross to close a buffer
+    if(view->update_tab_label)
+      view->update_tab_label(view);
   }
   return true;
 }
